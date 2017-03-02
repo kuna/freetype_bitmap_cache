@@ -75,9 +75,6 @@ public:
 	// MUST release object after using.
 	void RenderBitmap(const char *chrs, FontTexture* bitmap);
 	void RenderBitmap(const uint32_t *chrs, FontTexture* bitmap);
-	// @description render each chars to bitmap (but is it necessary?)
-	void RenderBitmap(const char *chrs, std::vector<FontTexture*> bitmaps);
-	bool RenderGlyph(FT_ULong charcode, FontBitmap* glyph, FontRenderer* fallback = 0);
 
 	FontRenderer();
 	~FontRenderer();
@@ -100,12 +97,15 @@ private:
 
 	// @description these options are related about rendering texts
 	int text_align;
+	// @description if loaded texture font, then font won't be able to be dynamically cached.
+	bool cacheable;
 
 	// @description these option is setted for fast rendering.
 	std::vector<void*> m_char_rendering_info;
 	virtual void BuildText(const char* chrs, int x, int y) = 0;
 public:
 	// these functions should be implemented
+	virtual void LoadCache(void* bitmap, int bitmap_count, std::vector<GlyphMetrics>& glyphmetrics) = 0;
 	virtual bool UploadGlyph(uint32_t charcode) = 0;
 	virtual void CacheGlyphs(const char *chrs) = 0;
 	virtual void CacheGlyphs(const uint32_t *chrs) = 0;
