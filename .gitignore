@@ -1,0 +1,6 @@
+*.ttf
+*.db
+*.opendb
+Debug
+Release
+.vs
