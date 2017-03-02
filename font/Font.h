@@ -4,7 +4,7 @@
  * by @lazykuna, MIT License
  */
 
-#include "include\ft2build.h"
+#include "ft2build.h"
 #include FT_FREETYPE_H
 #include FT_GLYPH_H
 #include <vector>
@@ -131,7 +131,7 @@ class FontGDICached: public FontBaseCached {
 /*
  * OpenGL Bitmap Caching TODO
  */
-class FontOpenGLCached : public FontBaseCached {
+class FontGLFWCached : public FontBaseCached {
 
 };
 
