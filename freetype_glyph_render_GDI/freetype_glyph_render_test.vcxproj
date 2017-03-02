@@ -21,8 +21,9 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{25D66C30-C7C8-402E-8346-95097225F01E}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
-    <RootNamespace>freetype_glyph_render_test</RootNamespace>
+    <RootNamespace>freetype_glyph_render_GDI</RootNamespace>
     <WindowsTargetPlatformVersion>8.1</WindowsTargetPlatformVersion>
+    <ProjectName>freetype_glyph_render_GDI</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
