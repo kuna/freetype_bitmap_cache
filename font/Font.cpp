@@ -284,6 +284,15 @@ bool FontRenderer::SetFontSize(int size)
 	return true;
 }
 
+
+
+
+
+
+/*
+* class FontBitmapCached
+*/
+
 void FontRenderer::CacheGlyphs(const uint32_t *chrs)
 {
 	// use RenderGlyph() to make this function work
