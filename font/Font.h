@@ -54,61 +54,58 @@ struct FontRenderMetrics {
 
 
 
-
+/*
+ * @description
+ * as caching style quite different by using graphic engine,
+ * this class actually do not only caching but caching.
+ * be aware of that.
+ *
+ * CLAIM: only allows SAME-HEIGHT bitmap character for caching!
+ */
 class FontBaseCache {
 private:
 	// @description this does not cache really; these variable/funcs just presets cache position.
 	unsigned int cache_x, cache_y, cache_width, cache_height;
 	std::vector<void*> m_cache_page;
 	std::vector<FontGlyphMetrics> m_cache_glyphs;
-	// @description is this glyph requries new page? if it is, return true. need sx/sy/width/height.
-	bool IsRequiresNewPage(FontGlyphMetrics& glyph);
-	// @description reset glyph's sx/sy of cache position. requiers width/height.
+	// @description reset glyph's sx/sy of cache position. requires width/height.
+	// if new page required, then automatically generate new page.
 	void GetNewGlyphCachePosition(FontGlyphMetrics& glyph);
-
-	// @description these options are related about rendering texts
-	int text_align;
-	// @description if loaded texture font, then font won't be able to be dynamically cached.
-	bool cacheable;
+	virtual void GenerateNewPage() = 0;
 
 	// @description these option is setted for fast rendering.
 	std::vector<FontRenderMetrics> m_char_rendering_info;
-	// @description generate FontRenderMetrics for fast-font rendering.
-	virtual void BuildText(const char* chrs, int x, int y);
 	// @description render single char using pre-calculated metrics.
-	virtual void RenderMetrics(FontRenderMetrics& metrics);
+	virtual void RenderSingleMetrics(FontRenderMetrics& metrics) = 0;
 
 
+	// @description these options are related about rendering texts
+	int text_align;
 
 public:
 	// @description load cache from file.
 	// if multiple cache, then call this method for many times you want.
-	virtual void LoadCache(FontBitmap* bitmap, std::vector<FontGlyphMetrics>& glyphmetrics) = 0;
-	// @description upload single glyph, called by CacheGlyphs().
-	virtual bool UploadGlyph(uint32_t charcode) = 0;
-	// @description upload multiple glyphs
-	virtual void CacheGlyphs(const char *chrs) = 0;
-	virtual void CacheGlyphs(const uint32_t *chrs) = 0;
+	virtual void AddCache(FontBitmap* bitmap, std::vector<FontGlyphMetrics>& glyphmetrics) = 0;
+	// @description upload glyphs, ONLY ALLOWS 8bit BITMAP DATA!
+	virtual bool UploadGlyph(std::vector<FontGlyphMetrics>& glyphmetrics) = 0;
 	// @description called when cache is cleared.
 	virtual void ClearCache() = 0;
 
 
 
-	// @description render each char in specific position
-	virtual void RenderChar(const uint32_t chr, int x, int y) = 0;
-	// @description render string in specific position
-	virtual void RenderText(const char* chrs, int x, int y) = 0;
-	// @description these option is setted for fast rendering.
-	virtual void SetText(const char* chrs, int x, int y) = 0;
-	// @description you should call SetText first before do RenderTextFast();
-	virtual void RenderTextFast() = 0;
+	// @description generate FontRenderMetrics for fast-font rendering.
+	virtual void BuildText(const uint32_t* chrs, int x, int y);
+	// @description render string with cached FontRenderMetrics
+	virtual void RenderText();
+	// @description render string in specific position, without generating metrics
+	virtual void RenderTextInstantly(const uint32_t* chrs, int x, int y);
 
 
 
 	FontBaseCache(int cache_width, int cache_height)
 		: cache_width(cache_width), cache_height(cache_height),
 		cache_x(0xFFFFFFFF), cache_y(0xFFFFFFFF) {}
-	~FontBaseCache();
+	~FontBaseCache() { ClearCache(); };
 };
 
 
@@ -125,9 +122,11 @@ class FontBitmapCache : public FontBaseCache {
 /*
 * GLFW library based texture caching TODO
 */
+#ifdef GLFW
 class FontGLFWCache : public FontBaseCache {
 
 };
+#endif
 
 
 
@@ -193,7 +192,7 @@ public:
 
 	// @description calls (fallback is optional)
 	const FT_GlyphSlot RenderGlyph(const uint32_t charcode, bool usefallback = true);
-	// @description generate bitmap with fully rendered font bitmap.
+	// @description generate bitmap with fully rendered font bitmap. (fallback follows FontOption value)
 	const FontBitmap* RenderBitmap(const char *chrs_utf8);
 	const FontBitmap* RenderBitmap(const uint32_t chr);
 
@@ -201,16 +200,32 @@ public:
 
 	/*
 	* Caching / Rendering string with cache
+	* CLAIM: if you want to directly cache bitmap/glyphs,
+	* call (this)->GetCache()->AddCache( ~ )
 	*/
 
-	// @descripton
+	// @description cache multiple glyphs "at once" (memory consuming, fast)
+	void CacheGlyphs(const char *chrs);
+	void CacheGlyphs(const uint32_t *chrs);
+	// @description upload multiple glyphs (performance consuming)
+	void UploadGlyphs(const char *chrs);
+	void UploadGlyphs(const uint32_t *chrs);
+	// @description render text using cache
+	void SetText(const uint32_t *chrs);
+	void SetText(const char* chrs);
+	// @description render text using cached & built metrics.
+	void RenderText();
+	// @description render text only using cached texture.
+	// metrics is generated instantly, so suggests using text rendering only once.
+	void RenderTextInstantly(const uint32_t *chrs);
+	void RenderTextInstantly(const char* chrs);
 
 
 	FontRenderer();
 	~FontRenderer();
 private:
+	// @description this MUST be set right after font is loaded.
 	bool SetFontSize(int size);
-	FontBitmap* GetGlyphFromCache(FT_ULong charcode);	// only get glyphs from cached one
 };
 
 

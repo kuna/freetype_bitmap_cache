@@ -288,9 +288,54 @@ bool FontRenderer::SetFontSize(int size)
 
 
 
+/*
+ * class FontBaseCache
+ */
+
+// @description reset glyph's sx/sy of cache position. requiers width/height.
+void FontBaseCache::GetNewGlyphCachePosition(FontGlyphMetrics& glyph)
+{
+	_ASSERT(glyph.width < cache_width && glyph.height < cache_height);
+	// to prevent overflow
+	if (cache_y == 0xFFFFFFFF) {
+		cache_x = 0;
+		cache_y = 0;
+		GenerateNewPage();
+	}
+	if (cache_x + glyph.width > cache_width) {
+		cache_x = 0;
+		cache_y += glyph.height;
+	}
+	if (cache_y + glyph.height > cache_height) {
+		// new page required
+		cache_x = 0;
+		cache_y = 0;
+		GenerateNewPage();
+	}
+	glyph.sx = cache_x;
+	glyph.sy = cache_y;
+	cache_x += glyph.width;
+}
+
+void FontBaseCache::BuildText(const uint32_t* chrs, int x, int y)
+{
+}
+
+// @description render string with cached FontRenderMetrics
+void FontBaseCache::RenderText()
+{
+}
+
+// @description render string in specific position, without generating metrics
+void FontBaseCache::RenderTextInstantly(const uint32_t* chrs, int x, int y)
+{
+}
+
+
+
 
 /*
-* class FontBitmapCached
+* class FontBitmapCache
 */
 
 void FontRenderer::CacheGlyphs(const uint32_t *chrs)
