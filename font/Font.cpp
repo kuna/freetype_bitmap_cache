@@ -269,6 +269,138 @@ void FontRenderer::ClearFont()
 	}
 }
 
+// @description initalize font cache with bitmap
+bool FontRenderer::CreateCache(FontCacheType type)
+{
+	ClearCache();
+	switch (type)
+	{
+	case FontCacheType_Bitmap:
+		ftGraphic = new FontBitmapGraphic(2048, 2048);
+		break;
+#ifdef GLFW
+	case FontCacheType_GLFW:
+		ftGraphic = new FontGLFWGraphic(2048, 2048);
+		break;
+#endif
+	default:
+		printf("Unknown type of font cache creation failed.\n");
+		return false;
+	}
+	return true;
+}
+
+// @description get internal variable, FontCache.
+FontBaseGraphic* FontRenderer::GetCache()
+{
+}
+
+// @description clear font cache
+void FontRenderer::ClearCache()
+{
+}
+
+FT_UInt FontRenderer::GetGlyphIndex(FT_ULong charcode) {
+	if (charcode == 0) return 0;
+	return FT_Get_Char_Index(ftFace, charcode);
+}
+
+FT_UInt FontRenderer::GetGlyphIndex(char **chrs) {
+	if (*chrs == 0) return 0;
+	FT_ULong charcode = FontUtil::utf8_to_utf32(chrs);
+	return GetGlyphIndex(charcode);
+}
+
+// @description calls (fallback is optional)
+const FT_GlyphSlot FontRenderer::RenderGlyph(const uint32_t charcode, bool usefallback = true)
+{
+}
+
+// @description generate bitmap with fully rendered font bitmap. (fallback follows FontOption value)
+const FontBitmap* FontRenderer::RenderBitmap(const char *chrs_utf8)
+{
+}
+
+const FontBitmap* FontRenderer::RenderBitmap(const uint32_t chr)
+{
+}
+
+void FontRenderer::CacheGlyphs(const char *chrs)
+{
+	std::basic_string<uint32_t> wchrs;
+	FontUtil::utf8_to_utf32_string(chrs, wchrs);
+	CacheGlyphs(wchrs.c_str());
+}
+
+void FontRenderer::CacheGlyphs(const uint32_t *chrs)
+{
+	// return if no cache available
+	if (!ftGraphic) {
+		printf("No font graphic/cache initialized; cannot cache font.\n");
+		return;
+	}
+
+	// generate glyph at once TODO
+	FontSurface* fontBitmapSurface;
+	for (FT_ULong charcode = *chrs; charcode = *chrs; ++chrs) {
+		FontBitmap fbit;
+		if (RenderBitmap(charcode, &fbit)) {
+			
+			glyphs[charcode] = fbit;
+		}
+	}
+}
+
+void FontRenderer::UploadGlyphs(const char *chrs)
+{
+}
+
+void FontRenderer::UploadGlyphs(const uint32_t *chrs)
+{
+}
+
+// @description render text using cache
+void FontRenderer::MakeText(const uint32_t *chrs, FontText& t)
+{
+}
+
+void FontRenderer::MakeText(const char* chrs, FontText& t)
+{
+
+}
+
+// @description render text using cached & built metrics.
+void FontRenderer::RenderText(FontText& t)
+{
+}
+
+// @description render text only using cached texture.
+// metrics is generated instantly, so suggests using text rendering only once.
+void FontRenderer::RenderTextInstantly(const uint32_t *chrs, int x, int y)
+{
+}
+
+void FontRenderer::RenderTextInstantly(const char* chrs, int x, int y)
+{
+}
+
+FontRenderer::FontRenderer()
+{
+	RefFTLib();
+	ftFace = 0;
+	fallback = 0;
+}
+
+FontRenderer::~FontRenderer()
+{
+#if USE_TEXTURE
+	ClearTexture();
+#endif
+	ClearCache();
+	ClearFont();
+	DerefFTLib();
+}
+
 bool FontRenderer::SetFontSize(int size)
 {
 	/* base: 96dpi (none means 72dpi) */
@@ -288,19 +420,24 @@ bool FontRenderer::SetFontSize(int size)
 
 
 
+
+
+
+
+
+
 /*
- * class FontBaseCache
+ * class FontBaseGraphic
  */
 
+
 // @description reset glyph's sx/sy of cache position. requiers width/height.
-void FontBaseCache::GetNewGlyphCachePosition(FontGlyphMetrics& glyph)
+bool FontBaseGraphic::GetNewGlyphCachePosition(FontGlyphMetrics& glyph)
 {
 	_ASSERT(glyph.width < cache_width && glyph.height < cache_height);
-	// to prevent overflow
 	if (cache_y == 0xFFFFFFFF) {
-		cache_x = 0;
-		cache_y = 0;
-		GenerateNewPage();
+		// to prevent overflow. new page required
+		return false;
 	}
 	if (cache_x + glyph.width > cache_width) {
 		cache_x = 0;
@@ -308,13 +445,12 @@ void FontBaseCache::GetNewGlyphCachePosition(FontGlyphMetrics& glyph)
 	}
 	if (cache_y + glyph.height > cache_height) {
 		// new page required
-		cache_x = 0;
-		cache_y = 0;
-		GenerateNewPage();
+		return false;
 	}
 	glyph.sx = cache_x;
 	glyph.sy = cache_y;
 	cache_x += glyph.width;
+	return true;
 }
 
 void FontBaseCache::BuildText(const uint32_t* chrs, int x, int y)
@@ -487,34 +623,6 @@ void FontRenderer::RenderBitmap(const uint32_t *chrs, FontTexture* bitmap)
 		}
 		ax += (*a)->width;
 	}
-}
-
-FontRenderer::FontRenderer()
-{
-	RefFTLib();
-	ftFace = 0;
-	fallback = 0;
-}
-
-FontRenderer::~FontRenderer()
-{
-#if USE_TEXTURE
-	ClearTexture();
-#endif
-	ClearCache();
-	ClearFont();
-	DerefFTLib();
-}
-
-FT_UInt FontRenderer::GetGlyphIndex(FT_ULong charcode) {
-	if (charcode == 0) return 0;
-	return FT_Get_Char_Index(ftFace, charcode);
-}
-
-FT_UInt FontRenderer::GetGlyphIndex(char **chrs) {
-	if (*chrs == 0) return 0;
-	FT_ULong charcode = FontUtil::utf8_to_utf32(chrs);
-	return GetGlyphIndex(charcode);
 }
 
 /*
