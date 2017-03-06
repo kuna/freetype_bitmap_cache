@@ -234,7 +234,7 @@ bool FontRenderer::LoadFont(const char * ttffp, int size, FontColor color)
 
 bool FontRenderer::LoadFont(const char * ttffp, const FontOption * option)
 {
-	FT_Error error = FT_New_Face(ftLib, ttffp, 0, &ftFace);
+	FT_Error error = FT_New_Face(ftLib, ttffp, 0, &m_ftFace);
 	if (error == FT_Err_Unknown_File_Format) {
 		printf("Font loading failed (Unsupported file format)\n");
 		return false;
@@ -242,13 +242,13 @@ bool FontRenderer::LoadFont(const char * ttffp, const FontOption * option)
 		printf("Font loading failed for unknown reason: %s / error %d\n", ttffp, error);
 		return false;
 	}
-	this->option = *option;
+	this->m_ftOption = *option;
 	return SetFontSize(option->size);
 }
 
 bool FontRenderer::LoadFont(const FT_Byte *buf, size_t size, const struct FontOption* option)
 {
-	FT_Error error = FT_New_Memory_Face(ftLib, buf, size, 0, &ftFace);
+	FT_Error error = FT_New_Memory_Face(ftLib, buf, size, 0, &m_ftFace);
 	if (error == FT_Err_Unknown_File_Format) {
 		printf("Font memory loading failed (Unsupported file format)\n");
 		return false;
@@ -257,15 +257,15 @@ bool FontRenderer::LoadFont(const FT_Byte *buf, size_t size, const struct FontOp
 		printf("Font memory loading failed for unknown reason: error %d\n", error);
 		return false;
 	}
-	this->option = *option;
+	this->m_ftOption = *option;
 	return SetFontSize(option->size);
 }
 
 void FontRenderer::ClearFont()
 {
-	if (ftFace) {
-		FT_Done_Face(ftFace);
-		ftFace = 0;
+	if (m_ftFace) {
+		FT_Done_Face(m_ftFace);
+		m_ftFace = 0;
 	}
 }
 
@@ -276,11 +276,11 @@ bool FontRenderer::CreateCache(FontCacheType type)
 	switch (type)
 	{
 	case FontCacheType_Bitmap:
-		ftGraphic = new FontBitmapGraphic(2048, 2048);
+		m_ftGraphic = new FontBitmapGraphic(2048, 2048);
 		break;
 #ifdef GLFW
 	case FontCacheType_GLFW:
-		ftGraphic = new FontGLFWGraphic(2048, 2048);
+		m_ftGraphic = new FontGLFWGraphic(2048, 2048);
 		break;
 #endif
 	default:
@@ -293,6 +293,7 @@ bool FontRenderer::CreateCache(FontCacheType type)
 // @description get internal variable, FontCache.
 FontBaseGraphic* FontRenderer::GetCache()
 {
+	return m_ftGraphic;
 }
 
 // @description clear font cache
@@ -302,7 +303,7 @@ void FontRenderer::ClearCache()
 
 FT_UInt FontRenderer::GetGlyphIndex(FT_ULong charcode) {
 	if (charcode == 0) return 0;
-	return FT_Get_Char_Index(ftFace, charcode);
+	return FT_Get_Char_Index(m_ftFace, charcode);
 }
 
 FT_UInt FontRenderer::GetGlyphIndex(char **chrs) {
@@ -314,15 +315,116 @@ FT_UInt FontRenderer::GetGlyphIndex(char **chrs) {
 // @description calls (fallback is optional)
 const FT_GlyphSlot FontRenderer::RenderGlyph(const uint32_t charcode, bool usefallback = true)
 {
+	FT_UInt gidx = FT_Get_Char_Index(m_ftFace, charcode);
+	FT_GlyphSlot slot_fallback = 0;
+	if (!gidx) {
+		/* in that case, we can call for *help* to fallback Font object. */
+		if (usefallback && m_ftFallback) {
+			slot_fallback = m_ftFallback->RenderGlyph(charcode, usefallback);
+		}
+		printf("Failed getting char index %C", charcode);
+	}
+	FT_GlyphSlot slot = slot_fallback;
+	if (!slot) {
+		FT_Error error = FT_Load_Glyph(m_ftFace, gidx, 0);
+		if (error) {
+			printf("Failed during loading Glyph: %u, error %d", gidx, error);
+			return false;
+		}
+		error = FT_Render_Glyph(m_ftFace->glyph, m_ftOption.antialiased ? FT_RENDER_MODE_NORMAL : FT_RENDER_MODE_MONO);
+		if (error) {
+			printf("Failed during rendering Glyph: %u, error %d", gidx, error);
+			return false;
+		}
+		slot = m_ftFace->glyph;
+	}
+	return slot;
 }
 
 // @description generate bitmap with fully rendered font bitmap. (fallback follows FontOption value)
-const FontBitmap* FontRenderer::RenderBitmap(const char *chrs_utf8)
+const FontSurface* FontRenderer::RenderBitmap(const char *chrs_utf8)
 {
+	uint32_t chr = FontUtil::utf8_to_utf32(chrs_utf8, FontUtil::utf8_get_char_len(chrs_utf8[0]));
+	if (!chr) return 0;
+	else return RenderBitmap(chr);
 }
 
-const FontBitmap* FontRenderer::RenderBitmap(const uint32_t chr)
+const FontSurface* FontRenderer::RenderBitmap(const uint32_t chr)
 {
+	// internally load glyph first
+	FT_GlyphSlot slot = RenderGlyph(chr);
+	if (!slot) return 0;
+
+	// prepare to render to surface ...
+	_ASSERT(m_renderedChar);
+	if (m_renderedChar->p) free(m_renderedChar->p);
+	m_renderedChar->p = 0;
+
+	/* bitmap size */
+	int px = slot->bitmap_left;
+	int py = slot->bitmap_top;
+	/* increment size (as it's vertical, ay is meaningless) */
+	m_renderedChar->width = slot->advance.x >> 6;
+	m_renderedChar->height = text_height;
+	/* real bitmap size */
+	int bwid = slot->bitmap.width;
+	int bhei = slot->bitmap.rows;
+	/*
+	* we'll copy bitmap to "big Bbox (global bbox height + vertical glyph bbox width)"
+	* so we cannot copy memory at once. we need to copy each pixel.
+	*/
+	int size = m_renderedChar->width * m_renderedChar->height;
+	m_renderedChar->p = (unsigned int*)malloc(size);
+	memset(m_renderedChar->p, 0, size);	// clear buffer
+	for (int y = 0; y < bhei; y++) {
+		for (int x = 0; x < bwid; x++) {
+			int dx = x + px;
+			if (dx < 0) continue;				// dx offset could be minus value; ignore in that case (we won't make such sensitive font, sorry ...)
+			int dy = y - py + text_ascender;	// as its axis is upside-down, we have to subtract
+			if (dx >= m_renderedChar->width || dy >= m_renderedChar->height || dy < 0)
+				break;
+			m_renderedChar->p[dx + dy * m_renderedChar->width]
+				= slot->bitmap.buffer[x + y * bwid];
+		}
+	}
+
+	//
+	// Outline part
+	// - is the same with previous one.
+	// (TODO)
+	//
+
+
+	// TODO
+	// get glyphs and cache them
+	std::vector<FontBitmap*> gs;
+	int bitmap_width = 0;
+	int bitmap_height = text_height;
+	while (*chrs) {
+		FontBitmap *b = GetGlyphFromCache(*chrs++);
+		if (!b) continue;
+		bitmap_width += b->width;
+		gs.push_back(b);
+	}
+	// make big bitmap
+	unsigned int *bdata = (unsigned int*)malloc(bitmap_width * bitmap_height * sizeof(int));
+	memset(bdata, 0, bitmap_width * bitmap_height * sizeof(int));
+	bitmap->p = bdata;
+	bitmap->width = bitmap_width;
+	bitmap->height = bitmap_height;
+	// copy all of them
+	int ax = 0;
+	for (auto a = gs.begin(); a != gs.end(); ++a) {
+		for (int y = 0; y < (*a)->height; y++) {
+			for (int x = 0; x < (*a)->width; x++) {
+				bdata[ax + x + y * bitmap_width] = 0x00FFFFFF / 255 * (*a)->p[x + y * (*a)->width];
+			}
+		}
+		ax += (*a)->width;
+	}
+
+
+	return m_renderedChar;
 }
 
 void FontRenderer::CacheGlyphs(const char *chrs)
@@ -332,67 +434,131 @@ void FontRenderer::CacheGlyphs(const char *chrs)
 	CacheGlyphs(wchrs.c_str());
 }
 
+// return if no cache available
+#define CHECK_CACHE_AVAILABLE\
+	if (!m_ftGraphic) { printf("No font graphic/cache initialized; cannot cache font.\n"); return; }
+
 void FontRenderer::CacheGlyphs(const uint32_t *chrs)
 {
-	// return if no cache available
-	if (!ftGraphic) {
-		printf("No font graphic/cache initialized; cannot cache font.\n");
-		return;
+	CHECK_CACHE_AVAILABLE;
+
+	// COMMENT: it's kind of double-buffering, is it better to remove double buffering?
+	FontRect glyphmetrics;
+	std::vector<FontRect> vGlyphmetrics;
+	FontSurface cachesurface;
+
+	for (FT_ULong charcode = *chrs; charcode = *chrs; ++chrs) {
+		// render new character 
+		const FontSurface* bitmap = RenderBitmap(charcode);
+		if (!bitmap) continue;
+		glyphmetrics.w = bitmap->width;
+		glyphmetrics.h = bitmap->height;
+
+		// check new character is available for new caching
+		// if not, upload current surface, before write new bitmap character.
+		if (!m_ftGraphic->GetNewGlyphCachePosition(glyphmetrics)) {
+			m_ftGraphic->AddCache(&cachesurface, vGlyphmetrics);
+			vGlyphmetrics.clear();
+			m_ftGraphic->ResetGlyphCachePosition();
+			m_ftGraphic->GetNewGlyphCachePosition(glyphmetrics);
+			memset(cachesurface.p, 0, sizeof(int)*cachesurface.width*cachesurface.height);
+		}
+
+		// write new bitmap character.
+		// (dst, src, dst_rect, src_x, src_y)
+		CopyBit(&cachesurface, bitmap, glyphmetrics, 0, 0);
 	}
 
-	// generate glyph at once TODO
-	FontSurface* fontBitmapSurface;
-	for (FT_ULong charcode = *chrs; charcode = *chrs; ++chrs) {
-		FontBitmap fbit;
-		if (RenderBitmap(charcode, &fbit)) {
-			
-			glyphs[charcode] = fbit;
-		}
+	// upload remaining surface, if available.
+	if (vGlyphmetrics.size()) {
+		m_ftGraphic->AddCache(&cachesurface, vGlyphmetrics);
 	}
 }
 
 void FontRenderer::UploadGlyphs(const char *chrs)
 {
+	CHECK_CACHE_AVAILABLE;
+	std::basic_string<uint32_t> ustr;
+	FontUtil::utf8_to_utf32_string(chrs, ustr);
+	UploadGlyphs(ustr.c_str());
 }
 
 void FontRenderer::UploadGlyphs(const uint32_t *chrs)
 {
+	CHECK_CACHE_AVAILABLE;
+
+	// TODO: change fontglyphmetrics into fontrect?
+	FontRect glyphmetrics;
+	while (*chrs) {
+		// render character ...
+		const FontSurface* bitmap = RenderBitmap(*chrs);
+
+		// ... and upload each character
+		if (!m_ftGraphic->GetNewGlyphCachePosition(glyphmetrics)) {
+			m_ftGraphic->GenerateNewPage();	// automatically position resetted
+			m_ftGraphic->GetNewGlyphCachePosition(glyphmetrics);
+		}
+		m_ftGraphic->UploadGlyph(bitmap, glyphmetrics);
+
+		// next
+		++chrs;
+	}
 }
 
 // @description render text using cache
 void FontRenderer::MakeText(const uint32_t *chrs, FontText& t)
 {
+	CHECK_CACHE_AVAILABLE;
+	m_ftGraphic->BuildText(chrs, 0, 0, t);
 }
 
 void FontRenderer::MakeText(const char* chrs, FontText& t)
 {
-
+	CHECK_CACHE_AVAILABLE;
+	std::basic_string<uint32_t> ustr;
+	FontUtil::utf8_to_utf32_string(chrs, ustr);
+	MakeText(ustr.c_str(), t);
 }
 
 // @description render text using cached & built metrics.
-void FontRenderer::RenderText(FontText& t)
+void FontRenderer::RenderText(const FontText& t)
 {
+	CHECK_CACHE_AVAILABLE;
+	m_ftGraphic->RenderText(t);
 }
 
 // @description render text only using cached texture.
 // metrics is generated instantly, so suggests using text rendering only once.
 void FontRenderer::RenderTextInstantly(const uint32_t *chrs, int x, int y)
 {
+	CHECK_CACHE_AVAILABLE;
+	m_ftGraphic->RenderTextInstantly(chrs, x, y);
 }
 
 void FontRenderer::RenderTextInstantly(const char* chrs, int x, int y)
 {
+	CHECK_CACHE_AVAILABLE;
+	std::basic_string<uint32_t> ustr;
+	FontUtil::utf8_to_utf32_string(chrs, ustr);
+	RenderTextInstantly(ustr.c_str(), x, y);
 }
+#undef CHECK_CACHE_AVAILABLE
 
 FontRenderer::FontRenderer()
+	: m_ftFace(0), m_ftFallback(0), m_ftGraphic(0), m_renderedChar(0)
 {
 	RefFTLib();
-	ftFace = 0;
-	fallback = 0;
+	m_renderedChar = new FontSurface();
+	m_renderedChar->p = 0;
+	m_renderedChar->height = 0;
+	m_renderedChar->width = 0;
 }
 
 FontRenderer::~FontRenderer()
 {
+	if (m_renderedChar)
+		delete m_renderedChar;
+
 #if USE_TEXTURE
 	ClearTexture();
 #endif
@@ -404,15 +570,15 @@ FontRenderer::~FontRenderer()
 bool FontRenderer::SetFontSize(int size)
 {
 	/* base: 96dpi (none means 72dpi) */
-	FT_Error error = FT_Set_Char_Size(ftFace, 0, size * 64, 0, 96);
+	FT_Error error = FT_Set_Char_Size(m_ftFace, 0, size * 64, 0, 96);
 	if (error) {
 		printf("Font size error : error %d\n", error);
 		return false;
 	}
 	/* store font height */
-	int texhei = ftFace->size->metrics.ascender - ftFace->size->metrics.descender;
+	int texhei = m_ftFace->size->metrics.ascender - m_ftFace->size->metrics.descender;
 	text_height = texhei >> 6;
-	text_ascender = ftFace->size->metrics.ascender >> 6;
+	text_ascender = m_ftFace->size->metrics.ascender >> 6;
 	return true;
 }
 
@@ -430,41 +596,81 @@ bool FontRenderer::SetFontSize(int size)
  * class FontBaseGraphic
  */
 
-
 // @description reset glyph's sx/sy of cache position. requiers width/height.
-bool FontBaseGraphic::GetNewGlyphCachePosition(FontGlyphMetrics& glyph)
+bool FontBaseGraphic::GetNewGlyphCachePosition(FontRect& glyph)
 {
-	_ASSERT(glyph.width < cache_width && glyph.height < cache_height);
+	_ASSERT(glyph.w < cache_width && glyph.h < cache_height);
 	if (cache_y == 0xFFFFFFFF) {
 		// to prevent overflow. new page required
 		return false;
 	}
-	if (cache_x + glyph.width > cache_width) {
+	if (cache_x + glyph.w > cache_width) {
 		cache_x = 0;
-		cache_y += glyph.height;
+		cache_y += glyph.h;
 	}
-	if (cache_y + glyph.height > cache_height) {
+	if (cache_y + glyph.h > cache_height) {
 		// new page required
 		return false;
 	}
-	glyph.sx = cache_x;
-	glyph.sy = cache_y;
-	cache_x += glyph.width;
+	glyph.x = cache_x;
+	glyph.y = cache_y;
+	cache_x += glyph.w;
 	return true;
 }
 
-void FontBaseCache::BuildText(const uint32_t* chrs, int x, int y)
+void FontBaseGraphic::ResetGlyphCachePosition()
 {
+	cache_x = cache_y = 0;
+}
+
+void FontBaseGraphic::BuildText(const uint32_t* chrs, int x, int y, FontText &t)
+{
+	t.pos_x = x;
+	t.pos_y = y;
+	t.m_char_metrics.clear();
+
+	// if no glyph found, then use question mark as default.
+	int cx = 0;
+	while (*chrs) {
+		uint32_t chr = *chrs;
+		if (m_cache_glyphs.find(*chrs) == m_cache_glyphs.end()) {
+			chr = '?';
+		}
+		FontRenderRect r = m_cache_glyphs[chr];
+		FontRenderMetrics m;
+		m.p = r.p;
+		m.sx = r.r.x;
+		m.sy = r.r.y;
+		m.sw = r.r.w;
+		m.sh = r.r.h;
+		m.dx = cx;
+		m.dy = 0;
+		m.dw = r.r.w;
+		m.dh = r.r.h;
+		cx += r.r.w;
+		t.m_char_metrics.push_back(m);
+
+		++chrs;
+	}
 }
 
 // @description render string with cached FontRenderMetrics
-void FontBaseCache::RenderText()
+void FontBaseGraphic::RenderText(const FontText& t)
 {
+	// COMMENT: x/y position operation should be done in parent class
+	for (auto a = t.m_char_metrics.begin(); a != t.m_char_metrics.end(); ++a)
+	{
+		RenderSingleMetrics(*a);
+	}
 }
 
 // @description render string in specific position, without generating metrics
-void FontBaseCache::RenderTextInstantly(const uint32_t* chrs, int x, int y)
+void FontBaseGraphic::RenderTextInstantly(const uint32_t* chrs, int x, int y)
 {
+	// internally build text, and render.
+	FontText t;
+	BuildText(chrs, x, y, t);
+	RenderText(t);
 }
 
 
@@ -500,136 +706,12 @@ void FontRenderer::ClearCache()
 	glyphs.clear();
 }
 
-// @description just renders single character (UTF8)
-// returns existing one if exists.
-bool FontRenderer::RenderGlyph(FT_ULong charcode, FontBitmap* glyph, Font* fallback)
-{
-	_ASSERT(glyph);
-	glyph->p = 0;
-	FT_UInt gidx = FT_Get_Char_Index(ftFace, charcode);
-	FT_GlyphSlot slot_fallback = 0;
-	if (!gidx) {
-		/* in that case, we can call for *help* to fallback Font object. */
-		// TODO
-		slot_fallback = 0;
-		printf("Failed getting char index %C", charcode);
-		return false;
-	}
-	FT_GlyphSlot slot = slot_fallback;
-	if (!slot) {
-		FT_Error error = FT_Load_Glyph(ftFace, gidx, 0);
-		if (error) {
-			printf("Failed during loading Glyph: %u, error %d", gidx, error);
-			return false;
-		}
-		error = FT_Render_Glyph(ftFace->glyph, option.antialiased ? FT_RENDER_MODE_NORMAL : FT_RENDER_MODE_MONO);
-		if (error) {
-			printf("Failed during rendering Glyph: %u, error %d", gidx, error);
-			return false;
-		}
-		slot = ftFace->glyph;
-	}
-
-	/* bitmap size */
-	int px = slot->bitmap_left;
-	int py = slot->bitmap_top;
-	/* increment size (as it's vertical, ay is meaningless) */
-	glyph->width = slot->advance.x >> 6;
-	glyph->height = text_height;
-	/* real bitmap size */
-	int bwid = slot->bitmap.width;
-	int bhei = slot->bitmap.rows;
-	/*
-	 * we'll copy bitmap to "big Bbox (global bbox height + vertical glyph bbox width)"
-	 * so we cannot copy memory at once. we need to copy each pixel.
-	 */
-	//int size = bwid * bhei;
-	//glyph->p = (char*)malloc(size);
-	//memcpy(glyph->p, slot->bitmap.buffer, size);
-	// (TODO) consider outline
-	int size = glyph->width * glyph->height;
-	glyph->p = (unsigned char*)malloc(size);
-	memset(glyph->p, 0, size);
-	for (int y = 0; y < bhei; y++) {
-		for (int x = 0; x < bwid; x++) {
-			int dx = x + px;
-			if (dx < 0) continue;				// dx offset could be minus value; ignore in that case (we won't make such sensitive font, sorry ...)
-			int dy = y - py + text_ascender;	// as its axis is upside-down, we have to subtract
-			if (dx >= glyph->width || dy >= glyph->height || dy < 0) break;
-			glyph->p[dx + dy * glyph->width] = slot->bitmap.buffer[x + y * bwid];
-		}
-	}
-
-	//
-	// Outline part
-	// - is the same with previous one.
-	// (TODO)
-	//
-	return true;
-}
-
-FontBitmap * FontRenderer::GetGlyphFromCache(FT_ULong charcode)
-{
-	// let's find glyph ...
-	auto glyph = glyphs.find(charcode);
-	if (glyph != glyphs.end())
-		return &glyph->second;
-	// if no found, then return '?' glyph
-	auto glyph_unknown = glyphs.find('?');
-	if (glyph_unknown != glyphs.end())
-		return &glyph_unknown->second;
-	// if no found, then return 0
-	return 0;
-}
-
-// @description generate string with font data, internally calls CacheGlyphs()
-// MUST release object after using.
-void FontRenderer::RenderBitmap(const char *chrs, FontTexture* bitmap)
-{
-	std::basic_string<uint32_t> wchrs;
-	FontUtil::utf8_to_utf32_string(chrs, wchrs);
-	RenderBitmap(wchrs.c_str(), bitmap);
-}
-
-void FontRenderer::RenderBitmap(const uint32_t *chrs, FontTexture* bitmap)
-{
-	// cache first
-	if (cache_auto) {
-		CacheGlyphs(chrs);
-	}
-	// get glyphs and cache them
-	std::vector<FontBitmap*> gs;
-	int bitmap_width = 0;
-	int bitmap_height = text_height;
-	while (*chrs) {
-		FontBitmap *b = GetGlyphFromCache(*chrs++);
-		if (!b) continue;
-		bitmap_width += b->width;
-		gs.push_back(b);
-	}
-	// make big bitmap
-	unsigned int *bdata = (unsigned int*)malloc(bitmap_width * bitmap_height * sizeof(int));
-	memset(bdata, 0, bitmap_width * bitmap_height * sizeof(int));
-	bitmap->p = bdata;
-	bitmap->width = bitmap_width;
-	bitmap->height = bitmap_height;
-	// copy all of them
-	int ax = 0;
-	for (auto a = gs.begin(); a != gs.end(); ++a) {
-		for (int y = 0; y < (*a)->height; y++) {
-			for (int x = 0; x < (*a)->width; x++) {
-				bdata[ax + x + y * bitmap_width] = 0x00FFFFFF / 255 * (*a)->p[x + y * (*a)->width];
-			}
-		}
-		ax += (*a)->width;
-	}
-}
 
 /*
  * TODOs
 
  *. support UTF8 text
- 2. (not glyph, but bitmap caching enabled)
+ *. (not glyph, but bitmap caching enabled)
  3. texture-rendering available
  4. outline available
  5. fallback font settable

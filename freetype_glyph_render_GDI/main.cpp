@@ -4,6 +4,7 @@ DEMO program for Cached-Freetype Font class
 
 #include <Windows.h>
 #include <tchar.h>
+#include <stdio.h>
 #include "Font.h"
 
 // procedure func

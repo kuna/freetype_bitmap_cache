@@ -15,7 +15,7 @@ typedef int FontStyle;
 typedef uint32_t GlyphIndex;
 
 // @description bitmap information for rendering
-// (only contains alpha channel)
+// (only contains alpha channel - 8bit)
 struct FontBitmap {
 	unsigned char *p;
 	int width;
@@ -23,8 +23,8 @@ struct FontBitmap {
 };
 
 // @description used for font foreground texture
-// (ARGB data)
-struct FontTexture {
+// (ARGB data - 32bit)
+struct FontSurface {
 	unsigned int *p;	// direct pointer to bitmap/texture
 	int width;
 	int height;
@@ -32,18 +32,12 @@ struct FontTexture {
 
 // @description used for shadow position setting
 struct FontVector {
-	int x, y, z;
+	int x, y;
 };
 
 // @description used for SetText / or something else ...
 struct FontRect {
 	int x, y, w, h;
-};
-
-struct FontGlyphMetrics {
-	void* p;	// directly points to bitmap/texture
-	int sx, sy;
-	int width, height;
 };
 
 struct FontRenderMetrics {
@@ -79,23 +73,31 @@ struct FontText {
  */
 class FontBaseGraphic {
 private:
+	/* for internal use */
+	struct FontRenderRect {
+		void *p;
+		FontRect r;
+	};
+
 	// @description this does not cache really; these variable/funcs just presets cache position.
 	unsigned int cache_x, cache_y, cache_width, cache_height;
 	std::vector<void*> m_cache_page;
-	std::vector<FontGlyphMetrics> m_cache_glyphs;
+	std::map<uint32_t, FontRenderRect> m_cache_glyphs;
 	// @description reset glyph's sx/sy of cache position. requires width/height.
 	// returns false if no more space enough for new glyph.
 	// you need to manually generate new page in case of need.
-	bool GetNewGlyphCachePosition(FontGlyphMetrics& glyph);
+	bool GetNewGlyphCachePosition(FontRect& glyph);
+	void ResetGlyphCachePosition();
 	virtual void GenerateNewPage() {};
 	// @description render single char using pre-calculated metrics.
-	virtual void RenderSingleMetrics(FontRenderMetrics& metrics) {};
+	virtual void RenderSingleMetrics(const FontRenderMetrics& metrics) {};
+	friend class FontRenderer;
 public:
 	// @description load cache from file.
 	// if multiple cache, then call this method for many times you want.
-	virtual void AddCache(FontBitmap* bitmap, std::vector<FontGlyphMetrics>& glyphmetrics) {};
+	virtual void AddCache(const FontSurface* bitmap, const std::vector<FontRect>& glyphmetrics) {};
 	// @description upload glyphs, ONLY ALLOWS 8bit BITMAP DATA!
-	virtual bool UploadGlyph(std::vector<FontGlyphMetrics>& glyphmetrics) {};
+	virtual bool UploadGlyph(const FontSurface *bitmap, const FontRect &r) {};
 	// @description called when cache is cleared.
 	virtual void ClearCache() {};
 
@@ -104,7 +106,7 @@ public:
 	// @description generate FontRenderMetrics for fast-font rendering.
 	virtual void BuildText(const uint32_t* chrs, int x, int y, FontText &t);
 	// @description render string with cached FontRenderMetrics
-	virtual void RenderText(FontText& t);
+	virtual void RenderText(const FontText& t);
 	// @description render string in specific position, without generating metrics
 	virtual void RenderTextInstantly(const uint32_t* chrs, int x, int y);
 
@@ -157,7 +159,7 @@ class FontGLFWGraphic : public FontBaseGraphic {
 struct FontOption {
 	int size;
 	FontColor color;
-	FontTexture foreground_texture;
+	FontSurface foreground_surface;
 	FontStyle style;
 	int antialiased;
 
@@ -169,15 +171,15 @@ struct FontOption {
 };
 
 class FontRenderer {
-	FontOption option;
+	FontOption m_ftOption;
 	// @description used for real heighting. (global height)
 	int text_height;	// Bbox height
 	int text_ascender;	// baseline position
 
-	FT_Face ftFace;
-	FontRenderer* fallback;
-	FontBaseGraphic* ftGraphic;
-	FontTexture* m_rendered_char;
+	FT_Face m_ftFace;
+	FontRenderer* m_ftFallback;
+	FontBaseGraphic* m_ftGraphic;
+	FontSurface* m_renderedChar;
 public:
 	// @description very basic initalizer, useful for logging text
 	bool LoadFont(const char *ttffp, int size, FontColor color=0x000000);
@@ -208,8 +210,8 @@ public:
 	// @description calls (fallback is optional)
 	const FT_GlyphSlot RenderGlyph(const uint32_t charcode, bool usefallback = true);
 	// @description generate bitmap with fully rendered font bitmap. (fallback follows FontOption value)
-	const FontBitmap* RenderBitmap(const char *chrs_utf8);
-	const FontBitmap* RenderBitmap(const uint32_t chr);
+	const FontSurface* RenderBitmap(const char *chrs_utf8);
+	const FontSurface* RenderBitmap(const uint32_t chr);
 
 
 
@@ -229,7 +231,7 @@ public:
 	void MakeText(const uint32_t *chrs, FontText& t);
 	void MakeText(const char* chrs, FontText& t);
 	// @description render text using cached & built metrics.
-	void RenderText(FontText& t);
+	void RenderText(const FontText& t);
 	// @description render text only using cached texture.
 	// metrics is generated instantly, so suggests using text rendering only once.
 	void RenderTextInstantly(const uint32_t *chrs, int x, int y);
