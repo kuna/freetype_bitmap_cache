@@ -359,23 +359,24 @@ const FontSurface* FontRenderer::RenderBitmap(const uint32_t chr)
 	_ASSERT(m_renderedChar);
 	if (m_renderedChar->p) free(m_renderedChar->p);
 	m_renderedChar->p = 0;
+	/* as it's vertical, ay is meaningless */
+	m_renderedChar->width = slot->advance.x >> 6;
+	m_renderedChar->height = text_height;
+	int chrbitmapsize =
+		m_renderedChar->width * m_renderedChar->height * sizeof(int);
+	m_renderedChar->p = (unsigned int*)malloc(chrbitmapsize);
+	memset(m_renderedChar->p, 0, chrbitmapsize);	// clear buffer
 
 	/* bitmap size */
 	int px = slot->bitmap_left;
 	int py = slot->bitmap_top;
-	/* increment size (as it's vertical, ay is meaningless) */
-	m_renderedChar->width = slot->advance.x >> 6;
-	m_renderedChar->height = text_height;
-	/* real bitmap size */
+	/* real bitmap size by freetype */
 	int bwid = slot->bitmap.width;
 	int bhei = slot->bitmap.rows;
 	/*
 	* we'll copy bitmap to "big Bbox (global bbox height + vertical glyph bbox width)"
 	* so we cannot copy memory at once. we need to copy each pixel.
 	*/
-	int size = m_renderedChar->width * m_renderedChar->height;
-	m_renderedChar->p = (unsigned int*)malloc(size);
-	memset(m_renderedChar->p, 0, size);	// clear buffer
 	for (int y = 0; y < bhei; y++) {
 		for (int x = 0; x < bwid; x++) {
 			int dx = x + px;
@@ -383,8 +384,20 @@ const FontSurface* FontRenderer::RenderBitmap(const uint32_t chr)
 			int dy = y - py + text_ascender;	// as its axis is upside-down, we have to subtract
 			if (dx >= m_renderedChar->width || dy >= m_renderedChar->height || dy < 0)
 				break;
-			m_renderedChar->p[dx + dy * m_renderedChar->width]
-				= slot->bitmap.buffer[x + y * bwid];
+
+			/* get bitmap pixel & software alpha-blending */
+			int pixel = m_ftOption.color;
+			if (m_ftOption.foreground_surface.p) {
+				int surf_x = dx;
+				int surf_y = dy;
+				if (surf_x < 0) surf_x = 0;
+				if (surf_y < 0) surf_y = 0;
+				if (surf_x > m_ftOption.foreground_surface.width) surf_x = m_ftOption.foreground_surface.width;
+				if (surf_y > m_ftOption.foreground_surface.height) surf_y = m_ftOption.foreground_surface.height;
+				pixel = m_ftOption.foreground_surface.p[surf_x + surf_y * m_ftOption.foreground_surface.width];
+			}
+			pixel = (((pixel >> 24) * slot->bitmap.buffer[x + y * bwid]) << 24) | (pixel & 0x00FFFFFF);
+			m_renderedChar->p[dx + dy * m_renderedChar->width] = pixel;
 		}
 	}
 
@@ -393,36 +406,6 @@ const FontSurface* FontRenderer::RenderBitmap(const uint32_t chr)
 	// - is the same with previous one.
 	// (TODO)
 	//
-
-
-	// TODO
-	// get glyphs and cache them
-	std::vector<FontBitmap*> gs;
-	int bitmap_width = 0;
-	int bitmap_height = text_height;
-	while (*chrs) {
-		FontBitmap *b = GetGlyphFromCache(*chrs++);
-		if (!b) continue;
-		bitmap_width += b->width;
-		gs.push_back(b);
-	}
-	// make big bitmap
-	unsigned int *bdata = (unsigned int*)malloc(bitmap_width * bitmap_height * sizeof(int));
-	memset(bdata, 0, bitmap_width * bitmap_height * sizeof(int));
-	bitmap->p = bdata;
-	bitmap->width = bitmap_width;
-	bitmap->height = bitmap_height;
-	// copy all of them
-	int ax = 0;
-	for (auto a = gs.begin(); a != gs.end(); ++a) {
-		for (int y = 0; y < (*a)->height; y++) {
-			for (int x = 0; x < (*a)->width; x++) {
-				bdata[ax + x + y * bitmap_width] = 0x00FFFFFF / 255 * (*a)->p[x + y * (*a)->width];
-			}
-		}
-		ax += (*a)->width;
-	}
-
 
 	return m_renderedChar;
 }
@@ -438,13 +421,48 @@ void FontRenderer::CacheGlyphs(const char *chrs)
 #define CHECK_CACHE_AVAILABLE\
 	if (!m_ftGraphic) { printf("No font graphic/cache initialized; cannot cache font.\n"); return; }
 
+namespace {
+	void CopyBit(FontSurface *dst, const FontSurface *src, const FontRect &dst_rect, int src_x, int src_y)
+	{
+		if (src_x < 0) src_x = 0;
+		if (src_y < 0) src_y = 0;
+
+		// check is dst is bigger than src
+		int src_w = dst_rect.w;
+		int src_h = dst_rect.h;
+		if (src_w > src->width || src_w < 0) src_w = src->width;
+		if (src_h > src->height || src_h < 0) src_h = src->height;
+
+		// check real copying size by checking src/dst width
+		if (src_w > src->width - src_x) src_w = src->width - src_x;
+		if (src_w > dst->width - dst_rect.x) src_w = dst->width - dst_rect.x;
+		if (src_h > src->height - src_y) src_h = src->height - src_y;
+		if (src_h > dst->height - dst_rect.y) src_h = dst->height - dst_rect.y;
+		if (src_w <= 0 || src_h <= 0) return;
+
+		// now copy pixel one by one
+		for (int y = 0; y < src_h; y++) {
+			for (int x = 0; x < src_w; x++) {
+				int dx = x + dst_rect.x;
+				int dy = y + dst_rect.y;
+				dst->p[dx + dy * dst->width] = src->p[x + y * src->width];
+			}
+		}
+	}
+
+	inline void FreeFontSurface(FontSurface* f) {
+		free(f->p);
+		delete f;
+	}
+}
+
 void FontRenderer::CacheGlyphs(const uint32_t *chrs)
 {
 	CHECK_CACHE_AVAILABLE;
 
 	// COMMENT: it's kind of double-buffering, is it better to remove double buffering?
 	FontRect glyphmetrics;
-	std::vector<FontRect> vGlyphmetrics;
+	std::map<uint32_t, FontRect> vGlyphmetrics;
 	FontSurface cachesurface;
 
 	for (FT_ULong charcode = *chrs; charcode = *chrs; ++chrs) {
@@ -465,6 +483,7 @@ void FontRenderer::CacheGlyphs(const uint32_t *chrs)
 		}
 
 		// write new bitmap character.
+		vGlyphmetrics[*chrs] = glyphmetrics;
 		// (dst, src, dst_rect, src_x, src_y)
 		CopyBit(&cachesurface, bitmap, glyphmetrics, 0, 0);
 	}
@@ -498,7 +517,7 @@ void FontRenderer::UploadGlyphs(const uint32_t *chrs)
 			m_ftGraphic->GenerateNewPage();	// automatically position resetted
 			m_ftGraphic->GetNewGlyphCachePosition(glyphmetrics);
 		}
-		m_ftGraphic->UploadGlyph(bitmap, glyphmetrics);
+		m_ftGraphic->UploadGlyph(bitmap, *chrs, glyphmetrics);
 
 		// next
 		++chrs;
@@ -677,42 +696,107 @@ void FontBaseGraphic::RenderTextInstantly(const uint32_t* chrs, int x, int y)
 
 
 /*
-* class FontBitmapCache
+* class FontBitmapGraphic
 */
 
-void FontRenderer::CacheGlyphs(const uint32_t *chrs)
+void FontBitmapGraphic::GenerateNewPage(int w, int h)
 {
-	// use RenderGlyph() to make this function work
-	for (FT_ULong charcode = *chrs; charcode = *chrs; ++chrs) {
-		FontBitmap fbit;
-		if (RenderGlyph(charcode, &fbit))
-			glyphs[charcode] = fbit;
+	if (w == 0) w = cache_width;
+	if (h == 0) h = cache_height;
+	FontSurface *p = new FontSurface();
+	p->p = (unsigned int*)malloc(w * h * sizeof(int));
+	p->width = w;
+	p->height = h;
+	ResetGlyphCachePosition();
+	m_cache_page.push_back(p);
+}
+
+void FontBitmapGraphic::RenderSingleMetrics(FontRenderMetrics& metrics)
+{
+	_ASSERT(m_rendering_target);
+	_ASSERT(metrics.p);
+
+	// COMMENT: we don't check FontRenderMetrics object here; this MUST be valid object.
+	FontSurface *src = (FontSurface*)metrics.p;
+	FontRect dst_rect;
+	dst_rect.x = metrics.dx + offset_x;
+	dst_rect.y = metrics.dy + offset_y;
+	dst_rect.w = metrics.dw;
+	dst_rect.h = metrics.dh;
+	CopyBit(m_rendering_target, src, dst_rect, 0, 0);
+}
+
+void FontBitmapGraphic::SetRenderTarget(FontSurface* bitmap)
+{
+	m_rendering_target = bitmap;
+}
+
+void FontBitmapGraphic::AddCache(const FontSurface* bitmap, const std::map<uint32_t, FontRect>& glyphmetrics)
+{
+	// copy bitmap first
+	_ASSERT(bitmap->p);
+	GenerateNewPage(bitmap->width, bitmap->height);
+	FontSurface *p = (FontSurface *)m_cache_page.back();
+	memcpy(p->p, bitmap->p, bitmap->width * bitmap->height * sizeof(int));
+
+	// and convert into FontRenderRect
+	FontRenderRect r;
+	r.p = p;	// COMMENT: void* : FontSurface*
+	for (auto a = glyphmetrics.begin(); a != glyphmetrics.end(); ++a)
+	{
+		r.r = a->second;
+		m_cache_glyphs[a->first] = r;
 	}
 }
 
-void FontRenderer::CacheGlyphs(const char *chrs)
+bool FontBitmapGraphic::UploadGlyph(const FontSurface *bitmap, uint32_t charcode, FontRect &r)
 {
-	std::basic_string<uint32_t> wchrs;
-	FontUtil::utf8_to_utf32_string(chrs, wchrs);
-	CacheGlyphs(wchrs.c_str());
-}
-
-// @description clear glyph cache
-void FontRenderer::ClearCache()
-{
-	for (auto a = glyphs.begin(); a != glyphs.end(); ++a) {
-		free(a->second.p);
+	// if not available, then make new page
+	if (!GetNewGlyphCachePosition(r)) {
+		GenerateNewPage();
+		GetNewGlyphCachePosition(r);
 	}
-	glyphs.clear();
+	// render at new page
+	FontSurface* p = (FontSurface *)m_cache_page.back();
+	CopyBit(p, bitmap, r, 0, 0);
+	// cache FontRenderRect
+	// COMMENT: void* : FontSurface*
+	FontRenderRect ft_r;
+	ft_r.p = p;
+	ft_r.r = r;
+	m_cache_glyphs[charcode] = ft_r;
 }
 
+void FontBitmapGraphic::ClearCache()
+{
+	for (auto a = m_cache_page.begin(); a != m_cache_page.end(); ++a) {
+		FreeFontSurface((FontSurface*)*a);
+	}
+	m_cache_page.clear();
+	m_cache_glyphs.clear();
+}
+
+void FontBitmapGraphic::RenderText(const FontText& t)
+{
+	if (t.m_cachetype != m_ftCachetype) {
+		printf("Cache type mismatch; unusable text");
+		return;
+	}
+	offset_x = t.pos_x;
+	offset_y = t.pos_y;
+	FontBaseGraphic::RenderText(t);
+}
+
+FontBitmapGraphic::FontBitmapGraphic(int w, int h)
+	: FontBaseGraphic(w, h, FontCacheType_Bitmap), m_rendering_target(0)
+{}
 
 /*
  * TODOs
 
  *. support UTF8 text
  *. (not glyph, but bitmap caching enabled)
- 3. texture-rendering available
+ *. texture-rendering available
  4. outline available
  5. fallback font settable
  

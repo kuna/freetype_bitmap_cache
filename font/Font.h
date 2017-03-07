@@ -12,7 +12,6 @@
 
 typedef int FontColor;
 typedef int FontStyle;
-typedef uint32_t GlyphIndex;
 
 // @description bitmap information for rendering
 // (only contains alpha channel - 8bit)
@@ -47,6 +46,7 @@ struct FontRenderMetrics {
 };
 
 enum FontCacheType {
+	FontCacheType_None,
 	FontCacheType_Bitmap,
 	FontCacheType_GLFW,
 };
@@ -72,7 +72,10 @@ struct FontText {
  * CLAIM: only allows SAME-HEIGHT bitmap character for caching!
  */
 class FontBaseGraphic {
-private:
+protected:
+	friend class FontRenderer;
+	FontCacheType m_ftCachetype;
+
 	/* for internal use */
 	struct FontRenderRect {
 		void *p;
@@ -88,16 +91,15 @@ private:
 	// you need to manually generate new page in case of need.
 	bool GetNewGlyphCachePosition(FontRect& glyph);
 	void ResetGlyphCachePosition();
-	virtual void GenerateNewPage() {};
+	virtual void GenerateNewPage(int w = 0, int h = 0) {};
 	// @description render single char using pre-calculated metrics.
 	virtual void RenderSingleMetrics(const FontRenderMetrics& metrics) {};
-	friend class FontRenderer;
 public:
 	// @description load cache from file.
 	// if multiple cache, then call this method for many times you want.
-	virtual void AddCache(const FontSurface* bitmap, const std::vector<FontRect>& glyphmetrics) {};
+	virtual void AddCache(const FontSurface* bitmap, const std::map<uint32_t, FontRect>& glyphmetrics) {};
 	// @description upload glyphs, ONLY ALLOWS 8bit BITMAP DATA!
-	virtual bool UploadGlyph(const FontSurface *bitmap, const FontRect &r) {};
+	virtual bool UploadGlyph(const FontSurface *bitmap, uint32_t charcode, FontRect &r) {};
 	// @description called when cache is cleared.
 	virtual void ClearCache() {};
 
@@ -112,9 +114,9 @@ public:
 
 
 
-	FontBaseGraphic(int cache_width, int cache_height)
+	FontBaseGraphic(int cache_width, int cache_height, FontCacheType t = FontCacheType_None)
 		: cache_width(cache_width), cache_height(cache_height),
-		cache_x(0xFFFFFFFF), cache_y(0xFFFFFFFF) {}
+		cache_x(0xFFFFFFFF), cache_y(0xFFFFFFFF), m_ftCachetype(t) {}
 	~FontBaseGraphic() { ClearCache(); };
 };
 
@@ -126,19 +128,23 @@ public:
 class FontBitmapGraphic : public FontBaseGraphic {
 private:
 	// @description target of rendering font cache
-	FontBitmap *m_rendering_target;
+	FontSurface *m_rendering_target;
 
-	virtual void GenerateNewPage();
+	// used when RenderSignleMetrics() ; Set in RenderText()
+	int offset_x, offset_y;
+
+	virtual void GenerateNewPage(int w = 0, int h = 0);
 	virtual void RenderSingleMetrics(FontRenderMetrics& metrics);
 public:
-	void SetRenderTarget(FontBitmap* bitmap);
+	void SetRenderTarget(FontSurface* bitmap);
 
-	virtual void BuildText(const uint32_t* chrs, int x, int y, FontText &t);
-	virtual void RenderText(FontText& t);
-	virtual void RenderTextInstantly(const uint32_t* chrs, int x, int y);
+	virtual void AddCache(const FontSurface* bitmap, const std::map<uint32_t, FontRect>& glyphmetrics);
+	virtual bool UploadGlyph(const FontSurface *bitmap, uint32_t charcode, FontRect &r);
+	virtual void ClearCache();
 
+	virtual void RenderText(const FontText& t);
 
-	FontBitmapGraphic(int w, int h) : FontBaseGraphic(w, h) {};
+	FontBitmapGraphic(int w, int h);
 };
 
 
