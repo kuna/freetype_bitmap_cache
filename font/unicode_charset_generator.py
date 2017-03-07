@@ -1,5 +1,12 @@
 txt = u""
 
+def charset_common():
+    global txt
+    txt += u'# common\n'
+    for i in range(0x0020, 0x007E+1):
+        txt += unichr(i)
+    txt += u'\n\n'
+
 # korean
 def charset_kor():
     global txt
@@ -13,7 +20,7 @@ def charset_kor():
     txt += u'\n'
     for i in range(0x3130, 0x318F+1):
         txt += unichr(i)
-    txt += u'\n'
+    txt += u'\n\n'
 
 
 # japanese
@@ -56,7 +63,7 @@ def charset_jap_c():
 
 
 
-
+charset_common()
 charset_kor()
 charset_jap()
 charset_jap_c()
@@ -64,5 +71,5 @@ charset_jap_c()
 print 'len about %d' % len(txt)
 
 with open('unicode_charset.txt', 'w') as f:
-    f.write(txt.encode('utf-32'))
+    f.write(txt.encode('utf-8'))
     f.close()
