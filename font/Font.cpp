@@ -1,5 +1,9 @@
 #include "Font.h"
 
+#ifdef USE_LIBPNG
+#include <png.h>
+#endif
+
 //
 // little refered from: https://www.freetype.org/freetype2/docs/tutorial/step1.html
 //
@@ -341,7 +345,7 @@ const FT_GlyphSlot FontRenderer::RenderGlyph(const uint32_t charcode, bool usefa
 	return slot;
 }
 
-// @description generate bitmap with fully rendered font bitmap. (fallback follows FontOption value)
+// @description generate bitmap for SINGLE char with fully rendered font bitmap. (fallback follows FontOption value)
 const FontSurface* FontRenderer::RenderBitmap(const char *chrs_utf8)
 {
 	uint32_t chr = FontUtil::utf8_to_utf32(chrs_utf8, FontUtil::utf8_get_char_len(chrs_utf8[0]));
@@ -394,10 +398,10 @@ const FontSurface* FontRenderer::RenderBitmap(const uint32_t chr)
 				if (surf_y < 0) surf_y = 0;
 				if (surf_x > m_ftOption.foreground_surface.width) surf_x = m_ftOption.foreground_surface.width;
 				if (surf_y > m_ftOption.foreground_surface.height) surf_y = m_ftOption.foreground_surface.height;
-				pixel = m_ftOption.foreground_surface.p[surf_x + surf_y * m_ftOption.foreground_surface.width];
+				pixel = static_cast<int*>(m_ftOption.foreground_surface.p)[surf_x + surf_y * m_ftOption.foreground_surface.width];
 			}
 			pixel = (((pixel >> 24) * slot->bitmap.buffer[x + y * bwid]) << 24) | (pixel & 0x00FFFFFF);
-			m_renderedChar->p[dx + dy * m_renderedChar->width] = pixel;
+			static_cast<int*>(m_renderedChar->p)[dx + dy * m_renderedChar->width] = pixel;
 		}
 	}
 
@@ -445,14 +449,9 @@ namespace {
 			for (int x = 0; x < src_w; x++) {
 				int dx = x + dst_rect.x;
 				int dy = y + dst_rect.y;
-				dst->p[dx + dy * dst->width] = src->p[x + y * src->width];
+				static_cast<int*>(dst->p)[dx + dy * dst->width] = static_cast<int*>(src->p)[x + y * src->width];
 			}
 		}
-	}
-
-	inline void FreeFontSurface(FontSurface* f) {
-		free(f->p);
-		delete f;
 	}
 }
 
@@ -692,6 +691,140 @@ void FontBaseGraphic::RenderTextInstantly(const uint32_t* chrs, int x, int y)
 	RenderText(t);
 }
 
+void FontBaseGraphic::ClearFontSurface()
+{
+	// WARNING: this won't clear font glyphs, so be careful to use this method.
+	for (auto a = m_cache_page.begin(); a != m_cache_page.end(); ++a) {
+		free(a->p);
+	}
+	m_cache_page.clear();
+}
+
+#ifdef USE_SAVEANDLOAD
+#define ABORT(expr)\
+		if (expr) { fclose(fp); return -1; }
+namespace {
+	int loadpngfile(FontSurface* surf, const std::string& destpath)
+	{
+		FILE *fp = fopen(folder.c_str(), "rb");
+		fread(header, 1, 8, fp);
+		ABORT(png_sig_cmp(header, 0, 8));
+		ABORT(!(png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL)));
+		ABORT(!(info_ptr = png_create_info_struct(png_ptr)));
+		ABORT(setjmp(png_jmpbuf(png_ptr)))
+
+			png_init_io(png_ptr, fp);
+		png_set_sig_bytes(png_ptr, 8);
+
+		png_read_info(png_ptr, info_ptr);
+
+		width = png_get_image_width(png_ptr, info_ptr);
+		height = png_get_image_height(png_ptr, info_ptr);
+		color_type = png_get_color_type(png_ptr, info_ptr);
+		bit_depth = png_get_bit_depth(png_ptr, info_ptr);
+
+		number_of_passes = png_set_interlace_handling(png_ptr);
+		png_read_update_info(png_ptr, info_ptr);
+
+		/* read file */
+		ABORT(setjmp(png_jmpbuf(png_ptr)));
+
+		row_pointers = (png_bytep*)malloc(sizeof(png_bytep) * height);
+		for (y = 0; y<height; y++)
+			row_pointers[y] = (png_byte*)malloc(png_get_rowbytes(png_ptr, info_ptr));
+
+		png_read_image(png_ptr, row_pointers);
+
+		fclose(fp);
+		return -1;
+	}
+
+	int savepngfile(const FontSurface* surf, const std::string& destpath)
+	{
+		/* create file */
+		FILE *fp = fopen(file_name, "wb");
+		if (!fp)
+			abort_("[write_png_file] File %s could not be opened for writing", file_name);
+
+
+		/* initialize stuff */
+		png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+
+		if (!png_ptr)
+			abort_("[write_png_file] png_create_write_struct failed");
+
+		info_ptr = png_create_info_struct(png_ptr);
+		if (!info_ptr)
+			abort_("[write_png_file] png_create_info_struct failed");
+
+		if (setjmp(png_jmpbuf(png_ptr)))
+			abort_("[write_png_file] Error during init_io");
+
+		png_init_io(png_ptr, fp);
+
+
+		/* write header */
+		if (setjmp(png_jmpbuf(png_ptr)))
+			abort_("[write_png_file] Error during writing header");
+
+		png_set_IHDR(png_ptr, info_ptr, width, height,
+			bit_depth, color_type, PNG_INTERLACE_NONE,
+			PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+
+		png_write_info(png_ptr, info_ptr);
+
+
+		/* write bytes */
+		if (setjmp(png_jmpbuf(png_ptr)))
+			abort_("[write_png_file] Error during writing bytes");
+
+		png_write_image(png_ptr, row_pointers);
+
+
+		/* end write */
+		if (setjmp(png_jmpbuf(png_ptr)))
+			abort_("[write_png_file] Error during end of write");
+
+		png_write_end(png_ptr, NULL);
+
+		/* cleanup heap allocation */
+		for (y = 0; y<height; y++)
+			free(row_pointers[y]);
+		free(row_pointers);
+
+		fclose(fp);
+	}
+}
+#undef ABORT
+
+virtual int FontBaseGraphic::SaveCache(const std::string& folder, const std::string& name)
+{
+	// make surface if not exists
+	if (!m_cache_page.size()) PrepareFontSurface();
+	// save glyphs
+	// TODO
+	// save image to png
+	for (auto a = m_cache_page.begin(); a != m_cache_page.end(); ++a) {
+		if (!savepngfile(*a, folder+"/dummy.png"))
+		{
+			throw "CANNOT save font cache ...";
+		}
+	}
+	return 0;
+}
+
+virtual int FontBaseGraphic::LoadCache(const std::string& folder, const std::string& name)
+{
+	// clear surface and other etcs first
+	ClearFontSurface();
+	// load glyphs
+	// TODO
+
+	// load png images
+	// ...
+}
+#endif
+
 
 
 
@@ -703,10 +836,10 @@ void FontBitmapGraphic::GenerateNewPage(int w, int h)
 {
 	if (w == 0) w = cache_width;
 	if (h == 0) h = cache_height;
-	FontSurface *p = new FontSurface();
-	p->p = (unsigned int*)malloc(w * h * sizeof(int));
-	p->width = w;
-	p->height = h;
+	FontSurface p;
+	p.p = (unsigned int*)malloc(w * h * sizeof(int));
+	p.width = w;
+	p.height = h;
 	ResetGlyphCachePosition();
 	m_cache_page.push_back(p);
 }
@@ -736,7 +869,7 @@ void FontBitmapGraphic::AddCache(const FontSurface* bitmap, const std::map<uint3
 	// copy bitmap first
 	_ASSERT(bitmap->p);
 	GenerateNewPage(bitmap->width, bitmap->height);
-	FontSurface *p = (FontSurface *)m_cache_page.back();
+	FontSurface *p = &m_cache_page.back();
 	memcpy(p->p, bitmap->p, bitmap->width * bitmap->height * sizeof(int));
 
 	// and convert into FontRenderRect
@@ -757,7 +890,7 @@ bool FontBitmapGraphic::UploadGlyph(const FontSurface *bitmap, uint32_t charcode
 		GetNewGlyphCachePosition(r);
 	}
 	// render at new page
-	FontSurface* p = (FontSurface *)m_cache_page.back();
+	FontSurface* p = &m_cache_page.back();
 	CopyBit(p, bitmap, r, 0, 0);
 	// cache FontRenderRect
 	// COMMENT: void* : FontSurface*
@@ -769,10 +902,7 @@ bool FontBitmapGraphic::UploadGlyph(const FontSurface *bitmap, uint32_t charcode
 
 void FontBitmapGraphic::ClearCache()
 {
-	for (auto a = m_cache_page.begin(); a != m_cache_page.end(); ++a) {
-		FreeFontSurface((FontSurface*)*a);
-	}
-	m_cache_page.clear();
+	ClearFontSurface();
 	m_cache_glyphs.clear();
 }
 
@@ -791,6 +921,10 @@ FontBitmapGraphic::FontBitmapGraphic(int w, int h)
 	: FontBaseGraphic(w, h, FontCacheType_Bitmap), m_rendering_target(0)
 {}
 
+const FontSurface* FontBitmapGraphic::GetFontPageBitmap(int pagenum)
+{
+	return &m_cache_page[pagenum];
+}
 /*
  * TODOs
 

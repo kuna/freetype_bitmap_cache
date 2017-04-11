@@ -47,16 +47,21 @@ int CALLBACK WinMain(
 	}
 
 	// Let's initialize font first ...
+	// (font cache)
 	Font font;
+	font.CreateCache(FontCacheType::FontCacheType_Bitmap);
+	FontSurface surf;
+	surf.p = bitmap;
+	surf.width = 640;
+	surf.height = 480;
+	static_cast<FontBitmapGraphic*>(font.GetCache())->SetRenderTarget(&surf);
+	// (font load)
 	font.LoadFont("NanumBarunGothic.ttf", 30);
-	FontTexture fnt;
-	font.RenderBitmap(str, &fnt);
-	for (int y = 0; y < fnt.height; y++) {
-		for (int x = 0; x < fnt.width && x < 640; x++) {
-			bitmap[x + (y + 120) * 640] = fnt.p[x + y * fnt.width] << 16;
-		}
-	}
-	free(fnt.p);
+	FontText text;
+	font.MakeText(str, text);
+	text.pos_x = 50;
+	text.pos_x = 60;
+	font.RenderText(text);
 
 
 	// generate window handle

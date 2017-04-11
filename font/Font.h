@@ -4,6 +4,17 @@
  * by @lazykuna, MIT License
  */
 
+
+//
+// To use font cache save/load,
+// Uncomment this line.
+//
+//#define USE_SAVEANDLOAD
+
+#ifdef USE_SAVEANDLOAD
+#define USE_LIBPNG
+#endif
+
 #include "ft2build.h"
 #include FT_FREETYPE_H
 #include FT_GLYPH_H
@@ -24,10 +35,12 @@ struct FontBitmap {
 // @description used for font foreground texture
 // (ARGB data - 32bit)
 struct FontSurface {
-	unsigned int *p;	// direct pointer to bitmap/texture
+	void *p;	// direct pointer to bitmap/texture
 	int width;
 	int height;
 };
+// it's a bit confusing, but anyway we'll going to mix usage.
+typedef FontSurface FontTexture;
 
 // @description used for shadow position setting
 struct FontVector {
@@ -78,13 +91,16 @@ protected:
 
 	/* for internal use */
 	struct FontRenderRect {
+		// @description caching page - RGBA in bitmap, Texture address in OpenGL/DX/etc.
 		void *p;
+		// @description SRC of caching page
 		FontRect r;
 	};
 
 	// @description this does not cache really; these variable/funcs just presets cache position.
 	unsigned int cache_x, cache_y, cache_width, cache_height;
-	std::vector<void*> m_cache_page;
+	// @description caching page
+	std::vector<FontSurface> m_cache_page;
 	std::map<uint32_t, FontRenderRect> m_cache_glyphs;
 	// @description reset glyph's sx/sy of cache position. requires width/height.
 	// returns false if no more space enough for new glyph.
@@ -94,6 +110,10 @@ protected:
 	virtual void GenerateNewPage(int w = 0, int h = 0) {};
 	// @description render single char using pre-calculated metrics.
 	virtual void RenderSingleMetrics(const FontRenderMetrics& metrics) {};
+	// @description prepare bitmap font surfaces - only useful when OpenGL/DX/etc renderer.
+	virtual void PrepareFontSurface() {};
+	// @description ONLY clears font surfaces (not glyph)
+	virtual void ClearFontSurface();
 public:
 	// @description load cache from file.
 	// if multiple cache, then call this method for many times you want.
@@ -112,6 +132,12 @@ public:
 	// @description render string in specific position, without generating metrics
 	virtual void RenderTextInstantly(const uint32_t* chrs, int x, int y);
 
+#ifdef USE_SAVEANDLOAD
+	// @description save cache to files
+	virtual int SaveCache(const std::string& folder, const std::string& name);
+	// @description load cache from files
+	virtual int LoadCache(const std::string& folder, const std::string& name);
+#endif
 
 
 	FontBaseGraphic(int cache_width, int cache_height, FontCacheType t = FontCacheType_None)
@@ -135,6 +161,7 @@ private:
 
 	virtual void GenerateNewPage(int w = 0, int h = 0);
 	virtual void RenderSingleMetrics(FontRenderMetrics& metrics);
+	virtual const FontSurface* GetFontPageBitmap(int pagenum);
 public:
 	void SetRenderTarget(FontSurface* bitmap);
 
@@ -143,7 +170,7 @@ public:
 	virtual void ClearCache();
 
 	virtual void RenderText(const FontText& t);
-
+	
 	FontBitmapGraphic(int w, int h);
 };
 
@@ -215,7 +242,7 @@ public:
 
 	// @description calls (fallback is optional)
 	const FT_GlyphSlot RenderGlyph(const uint32_t charcode, bool usefallback = true);
-	// @description generate bitmap with fully rendered font bitmap. (fallback follows FontOption value)
+	// @description generate bitmap for SINGLE char with fully rendered font bitmap. (fallback follows FontOption value)
 	const FontSurface* RenderBitmap(const char *chrs_utf8);
 	const FontSurface* RenderBitmap(const uint32_t chr);
 
